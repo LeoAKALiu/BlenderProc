@@ -68,6 +68,22 @@ class InstallUtility:
         
         # If blender should be downloaded automatically
         if custom_blender_path is None:
+            # Try to auto-detect system-installed Blender on macOS
+            if platform == "darwin":
+                # Common macOS Blender installation paths
+                common_paths = [
+                    "/Applications/Blender.app",
+                    os.path.expanduser("~/Applications/Blender.app"),
+                ]
+                for path in common_paths:
+                    blender_binary = os.path.join(path, "Contents", "MacOS", "Blender")
+                    if os.path.exists(blender_binary) and os.access(blender_binary, os.X_OK):
+                        print(f"Auto-detected Blender at: {path}")
+                        custom_blender_path = path
+                        break
+        
+        # If blender should be downloaded automatically (still None after auto-detection)
+        if custom_blender_path is None:
             # Determine path where blender should be installed
             if blender_install_path is not None:
                 blender_install_path = os.path.expanduser(blender_install_path)
@@ -176,7 +192,22 @@ class InstallUtility:
                             # pylint: disable=protected-access
                             ssl._create_default_https_context = ssl._create_unverified_context
                             # pylint: enable=protected-access
-                        file_tmp = urlretrieve(url, None)[0]
+                            print("Warning: SSL certificate verification disabled due to certificate error")
+                            file_tmp = urlretrieve(url, None)[0]
+                        else:
+                            raise e
+                    elif platform == "darwin":
+                        # on macOS, SSL certificate issues can also occur
+                        # deactivate the ssl check if needed
+                        if (not os.environ.get('PYTHONHTTPSVERIFY', '') and
+                                getattr(ssl, '_create_unverified_context', None)):
+                            # pylint: disable=protected-access
+                            ssl._create_default_https_context = ssl._create_unverified_context
+                            # pylint: enable=protected-access
+                            print("Warning: SSL certificate verification disabled due to certificate error")
+                            file_tmp = urlretrieve(url, None)[0]
+                        else:
+                            raise e
                     else:
                         raise e
                 if platform in ["linux", "linux2"]:

@@ -809,24 +809,44 @@ def disable_all_denoiser():
 
     # Disable intel denoiser
     if bpy.context.scene.use_nodes:
-        nodes = bpy.context.scene.node_tree.nodes
-        links = bpy.context.scene.node_tree.links
+        # Blender 5.0 compatibility: ensure node_tree exists
+        bpy.context.scene.use_nodes = True
+        # In Blender 5.0, node_tree might not exist immediately, check and create if needed
+        nodes = None
+        links = None
+        
+        # Compositor node_tree always exists on scene, not on view_layer
+        # If node_tree doesn't exist, try to ensure it's created by setting use_nodes
+        if not hasattr(bpy.context.scene, 'node_tree') or bpy.context.scene.node_tree is None:
+            # Force creation of node tree by ensuring use_nodes is True
+            bpy.context.scene.use_nodes = True
+            # Wait a moment for Blender to create the node tree (if needed)
+            # If it still doesn't exist, denoiser nodes can't exist anyway, so skip
+            if hasattr(bpy.context.scene, 'node_tree') and bpy.context.scene.node_tree is not None:
+                nodes = bpy.context.scene.node_tree.nodes
+                links = bpy.context.scene.node_tree.links
+        else:
+            nodes = bpy.context.scene.node_tree.nodes
+            links = bpy.context.scene.node_tree.links
 
-        # Go through all existing denoiser nodes
-        for denoiser_node in Utility.get_nodes_with_type(nodes, 'CompositorNodeDenoise'):
-            in_node = denoiser_node.inputs['Image']
-            out_node = denoiser_node.outputs['Image']
+        # Only attempt to remove denoiser nodes if we have valid nodes and links
+        # If node_tree is not available, denoiser nodes can't exist anyway, so it's safe to skip
+        if nodes is not None and links is not None:
+            # Go through all existing denoiser nodes
+            for denoiser_node in Utility.get_nodes_with_type(nodes, 'CompositorNodeDenoise'):
+                in_node = denoiser_node.inputs['Image']
+                out_node = denoiser_node.outputs['Image']
 
-            # If it is fully included into the node tree
-            if in_node.is_linked and out_node.is_linked:
-                # There is always only one input link
-                in_link = in_node.links[0]
-                # Connect from_socket of the incoming link with all to_sockets of the out going links
-                for link in out_node.links:
-                    links.new(in_link.from_socket, link.to_socket)
+                # If it is fully included into the node tree
+                if in_node.is_linked and out_node.is_linked:
+                    # There is always only one input link
+                    in_link = in_node.links[0]
+                    # Connect from_socket of the incoming link with all to_sockets of the out going links
+                    for link in out_node.links:
+                        links.new(in_link.from_socket, link.to_socket)
 
-            # Finally remove the denoiser node
-            nodes.remove(denoiser_node)
+                # Finally remove the denoiser node
+                nodes.remove(denoiser_node)
 
 
 def set_world_background(color: List[float], strength: float = 1):
@@ -840,12 +860,25 @@ def set_world_background(color: List[float], strength: float = 1):
     nodes = world.node_tree.nodes
     links = world.node_tree.links
 
-    # Unlink any incoming link that would overwrite the default value
-    if len(nodes.get("Background").inputs['Color'].links) > 0:
-        links.remove(nodes.get("Background").inputs['Color'].links[0])
+    # Get or create Background node (Blender 5.0 compatibility)
+    background_node = nodes.get("Background")
+    if background_node is None:
+        # Create Background node if it doesn't exist (Blender 5.0+)
+        background_node = nodes.new(type='ShaderNodeBackground')
+        background_node.name = "Background"
+        # Connect to output
+        output_node = nodes.get("World Output")
+        if output_node is None:
+            output_node = nodes.new(type='ShaderNodeOutputWorld')
+            output_node.name = "World Output"
+        links.new(background_node.outputs[0], output_node.inputs[0])
 
-    nodes.get("Background").inputs['Strength'].default_value = strength
-    nodes.get("Background").inputs['Color'].default_value = color + [1]
+    # Unlink any incoming link that would overwrite the default value
+    if len(background_node.inputs['Color'].links) > 0:
+        links.remove(background_node.inputs['Color'].links[0])
+
+    background_node.inputs['Strength'].default_value = strength
+    background_node.inputs['Color'].default_value = color + [1]
 
 
 def enable_experimental_features():
