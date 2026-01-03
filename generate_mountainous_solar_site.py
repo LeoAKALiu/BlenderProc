@@ -1,10 +1,13 @@
 import blenderproc as bproc
 """
 Mountainous Solar Construction Site Dataset Generator
+基于《光伏板桩特征调研报告》的高保真数据集生成器
 
-This script creates a realistic mountainous solar construction site with:
+This script creates a photorealistic mountainous solar construction site with:
+- High-fidelity pile assets (PHC, Spiral Steel, Cast-in-place)
+- Constraint-based layout following GB 50797-2012
+- Environmental storytelling (track marks, debris, geological presets)
 - Terraced terrain with steps
-- Curved pile rows following terrain contours
 - Mixed textures (red soil + dry grass)
 - Bulldozed/scraped areas under pile rows
 - Tire track normal maps
@@ -20,10 +23,26 @@ import cv2
 import random
 import glob
 from pathlib import Path
-from typing import List, Tuple, Optional, Dict
+from typing import List, Tuple, Optional, Dict, Literal
 import bpy
 import mathutils
 from blenderproc.python.utility.Utility import Utility
+
+# Import new modules
+try:
+    from pile_factory import create_pile_variant
+    from pile_layout_engine import layout_piles_with_constraints
+    from environmental_storytelling import (
+        create_track_marks,
+        create_construction_debris,
+        configure_geological_preset,
+        add_vegetation_traces
+    )
+    ADVANCED_FEATURES_AVAILABLE = True
+except ImportError as e:
+    print(f"Warning: Advanced features not available: {e}")
+    print("  Falling back to basic pile generation")
+    ADVANCED_FEATURES_AVAILABLE = False
 
 
 def create_terraced_terrain(
@@ -1136,31 +1155,127 @@ def generate_single_image(
     if asset_path:
         load_concrete_texture(asset_path, print_found=False)
     
-    # Create piles: either clusters or curved rows
-    if use_clusters:
-        print(f"Creating {num_clusters} pile clusters ({min_piles_per_cluster}-{max_piles_per_cluster} piles each)...")
-        piles = create_pile_clusters(
+    # Choose geological preset (for advanced features)
+    geological_preset = kwargs.get('geological_preset', np.random.choice(["loess", "hills"]))
+    use_advanced_features = kwargs.get('use_advanced_features', ADVANCED_FEATURES_AVAILABLE)
+    
+    # Configure geological preset (if using advanced features)
+    preset_config = None
+    if use_advanced_features:
+        preset_config = configure_geological_preset(terrain, geological_preset, asset_path)
+        add_vegetation_traces(terrain, preset_config, asset_path)
+    
+    # Create piles: use advanced layout engine or legacy methods
+    piles = []
+    pile_positions = []  # For track marks and debris
+    
+    if use_advanced_features and ADVANCED_FEATURES_AVAILABLE:
+        # Use constraint-based layout engine
+        print("Using advanced constraint-based layout engine (GB 50797-2012)...")
+        
+        # Calculate number of groups based on desired pile count
+        if use_clusters:
+            num_groups = num_clusters
+            piles_per_group = (min_piles_per_cluster + max_piles_per_cluster) // 2
+        else:
+            num_groups = num_rows
+            piles_per_group = piles_per_row
+        
+        # Get pile layout from engine
+        pile_info_list = layout_piles_with_constraints(
             terrain=terrain,
-            num_clusters=num_clusters,
-            min_piles_per_cluster=min_piles_per_cluster,
-            max_piles_per_cluster=max_piles_per_cluster,
-            terrain_size=terrain_size,
-            cluster_size=cluster_size,
-            asset_path=asset_path
-        )
-    else:
-        print(f"Creating {num_rows} curved rows ({piles_per_row} piles per row)...")
-        piles = create_curved_pile_rows(
-            terrain=terrain,
-            num_rows=num_rows,
-            piles_per_row=piles_per_row,
-            row_spacing=row_spacing,
             area_size=terrain_size,
+            num_groups=num_groups,
+            piles_per_group=piles_per_group,
             road_width=8.0,
             asset_path=asset_path
         )
+        
+        # Create piles using factory
+        for pile_info in pile_info_list:
+            pos = pile_info['position']
+            terrain_z = pile_info['terrain_z']
+            tilt = pile_info['tilt']
+            pile_type = pile_info['pile_type']
+            pile_params = pile_info['pile_params']
+            
+            # Override pile type based on preset (if specified)
+            if preset_config:
+                pile_type_rand = np.random.random()
+                pile_type_probs = preset_config.get('pile_type_probability', {})
+                if pile_type_probs:
+                    pile_type = np.random.choice(
+                        list(pile_type_probs.keys()),
+                        p=list(pile_type_probs.values())
+                    )
+            
+            # Create pile using factory
+            pile_obj, attachment = create_pile_variant(
+                pile_type=pile_type,
+                location=pos,
+                terrain_z=terrain_z,
+                **pile_params
+            )
+            
+            # Apply tilt (engineering tolerance)
+            pile_obj.set_rotation_euler(tilt)
+            
+            piles.append(pile_obj)
+            if attachment:
+                piles.append(attachment)
+            
+            pile_positions.append(pos)
+        
+        print(f"Total piles created: {len(piles)} (using advanced factory)")
+    else:
+        # Use legacy methods
+        if use_clusters:
+            print(f"Creating {num_clusters} pile clusters ({min_piles_per_cluster}-{max_piles_per_cluster} piles each)...")
+            piles = create_pile_clusters(
+                terrain=terrain,
+                num_clusters=num_clusters,
+                min_piles_per_cluster=min_piles_per_cluster,
+                max_piles_per_cluster=max_piles_per_cluster,
+                terrain_size=terrain_size,
+                cluster_size=cluster_size,
+                asset_path=asset_path
+            )
+            # Extract positions for legacy clusters (approximate)
+            for pile in piles:
+                loc = pile.get_location()
+                pile_positions.append(np.array([loc[0], loc[1]]))
+        else:
+            print(f"Creating {num_rows} curved rows ({piles_per_row} piles per row)...")
+            piles = create_curved_pile_rows(
+                terrain=terrain,
+                num_rows=num_rows,
+                piles_per_row=piles_per_row,
+                row_spacing=row_spacing,
+                area_size=terrain_size,
+                road_width=8.0,
+                asset_path=asset_path
+            )
+            # Extract positions for legacy rows
+            for pile in piles:
+                loc = pile.get_location()
+                pile_positions.append(np.array([loc[0], loc[1]]))
+        
+        print(f"Total piles created: {len(piles)}")
     
-    print(f"Total piles created: {len(piles)}")
+    # Add environmental storytelling (if using advanced features)
+    if use_advanced_features and ADVANCED_FEATURES_AVAILABLE and pile_positions:
+        print("Adding environmental storytelling...")
+        
+        # Create track marks
+        create_track_marks(terrain, pile_positions)
+        
+        # Create construction debris
+        debris_objects = create_construction_debris(
+            terrain,
+            pile_positions,
+            debris_probability=0.3
+        )
+        # Note: debris_objects are already created and added to scene
     
     # Create distractor objects
     print(f"Creating {num_bags} material bags and {num_machinery} machinery blocks...")
@@ -1352,6 +1467,8 @@ def main() -> None:
     parser.add_argument('--noise_threshold', type=float, default=0.01, help="Noise threshold for adaptive sampling (default: 0.01)")
     parser.add_argument('--save_hdf5', action='store_true', help="Save HDF5 files (optional, for visualization)")
     parser.add_argument('--save_coco', action='store_true', help="Save COCO annotations (optional)")
+    parser.add_argument('--use_advanced_features', action='store_true', default=True, help="Use advanced features (high-fidelity piles, constraint-based layout, environmental storytelling)")
+    parser.add_argument('--geological_preset', type=str, choices=["loess", "hills"], default=None, help="Geological preset: 'loess' (黄土高原) or 'hills' (南方丘陵). If not set, randomly chosen.")
     args = parser.parse_args()
     
     # Set random seed if provided (for reproducibility and parallel execution)
@@ -1578,6 +1695,11 @@ def main() -> None:
     kwargs['sun_radius'] = np.random.uniform(1.5, 2.5)
     
     # Generate single image (no cleanup needed - fresh process)
+    # Add advanced features parameters
+    kwargs['use_advanced_features'] = args.use_advanced_features
+    if args.geological_preset:
+        kwargs['geological_preset'] = args.geological_preset
+    
     generate_single_image(
         images_dir=images_dir,
         labels_dir=labels_dir,
