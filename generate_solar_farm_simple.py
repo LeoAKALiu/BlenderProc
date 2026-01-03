@@ -2,6 +2,9 @@ import blenderproc as bproc
 """
 Simple solar farm dataset generator - starting from scratch with minimal approach.
 
+⚠️ TEST ONLY: This is a minimal test version for debugging and verification.
+For production use, please use generate_mountainous_solar_site.py instead.
+
 This script uses a simple, incremental approach:
 1. Create minimal scene (ground + few piles)
 2. Use proven working camera parameters

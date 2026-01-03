@@ -2,6 +2,12 @@ import blenderproc as bproc
 """
 Generate synthetic dataset for solar farm construction site object detection.
 
+⚠️ DEPRECATED: This script is deprecated and kept for reference only.
+Please use generate_mountainous_solar_site.py instead, which includes:
+- Advanced pile assets (PHC, Spiral Steel, Cast-in-place)
+- Constraint-based layout following GB 50797-2012
+- Environmental storytelling (track marks, debris, geological presets)
+
 This script creates a procedurally generated scene with:
 - Solar piles (cylinders) arranged in a grid with variations
 - Uneven ground with displacement and tire tracks
@@ -520,7 +526,6 @@ def main() -> None:
         
         # Debug: print camera position for first camera
         if _ == 0:
-            offset_dist = np.sqrt(offset_x**2 + offset_y**2) if 'offset_x' in locals() else 0.0
             print(f"Debug: Camera position: ({x:.2f}, {y:.2f}, {height:.2f}), pitch: {pitch:.1f}° (nadir view)")
     
     print(f"Debug: Created {args.num_cameras} camera poses")

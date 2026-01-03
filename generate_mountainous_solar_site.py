@@ -1019,8 +1019,25 @@ def write_yolo_annotations(
         else:
             segmaps_list = [instance_segmaps]
     
+    # Defensive check: ensure segmaps_list is not empty
+    if not segmaps_list or len(segmaps_list) == 0:
+        print(f"Warning: Empty segmentation maps list, skipping annotation generation for image {image_index:06d}")
+        # Create empty annotation file
+        label_file = os.path.join(labels_dir, f"{image_index:06d}.txt")
+        with open(label_file, 'w') as f:
+            pass  # Empty file
+        return
+    
     # Process first frame (assuming one image per render call)
     segmap = segmaps_list[0]
+    
+    # Additional defensive check: ensure segmap is valid
+    if segmap is None or segmap.size == 0:
+        print(f"Warning: Invalid segmentation map, skipping annotation generation for image {image_index:06d}")
+        label_file = os.path.join(labels_dir, f"{image_index:06d}.txt")
+        with open(label_file, 'w') as f:
+            pass  # Empty file
+        return
     
     # Find unique instance IDs (excluding background 0)
     unique_ids = np.unique(segmap)
