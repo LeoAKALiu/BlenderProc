@@ -1032,8 +1032,27 @@ def write_yolo_annotations(
     segmap = segmaps_list[0]
     
     # Additional defensive check: ensure segmap is valid
-    if segmap is None or segmap.size == 0:
-        print(f"Warning: Invalid segmentation map, skipping annotation generation for image {image_index:06d}")
+    # Check if segmap is None or not a valid array-like object
+    if segmap is None:
+        print(f"Warning: Segmentation map is None, skipping annotation generation for image {image_index:06d}")
+        label_file = os.path.join(labels_dir, f"{image_index:06d}.txt")
+        with open(label_file, 'w') as f:
+            pass  # Empty file
+        return
+    
+    # Convert to numpy array if needed (handles both numpy arrays and lists)
+    try:
+        segmap = np.asarray(segmap)
+    except Exception as e:
+        print(f"Warning: Cannot convert segmentation map to numpy array: {e}, skipping annotation generation for image {image_index:06d}")
+        label_file = os.path.join(labels_dir, f"{image_index:06d}.txt")
+        with open(label_file, 'w') as f:
+            pass  # Empty file
+        return
+    
+    # Check if segmap is empty (now safe to access .size)
+    if segmap.size == 0:
+        print(f"Warning: Empty segmentation map, skipping annotation generation for image {image_index:06d}")
         label_file = os.path.join(labels_dir, f"{image_index:06d}.txt")
         with open(label_file, 'w') as f:
             pass  # Empty file
