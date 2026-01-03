@@ -102,13 +102,17 @@ for IMG_IDX in $(seq 0 $((TOTAL_IMAGES - 1))); do
     echo "Starting image $IMG_IDX (seed=$SEED, PID will be logged)"
     
     # Run BlenderProc in background (single image per process)
+    # Production parameters: full resolution, standard complexity
     blenderproc run "$SCRIPT_NAME" "$OUTPUT_DIR" \
         --image_index "$IMG_IDX" \
         --seed "$SEED" \
         --use_clusters \
+        --use_advanced_features \
         --use_gpu \
         --max_samples 50 \
-        --noise_threshold 0.01 \
+        --noise_threshold 0.05 \
+        --render_width 5280 \
+        --render_height 3956 \
         > "$LOG_FILE" 2>&1 &
     
     PID=$!

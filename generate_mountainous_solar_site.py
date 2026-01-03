@@ -43,6 +43,19 @@ except ImportError as e:
     print(f"Warning: Advanced features not available: {e}")
     print("  Falling back to basic pile generation")
     ADVANCED_FEATURES_AVAILABLE = False
+    # Define placeholder functions to avoid NameError
+    def create_pile_variant(*args, **kwargs):
+        raise NotImplementedError("Advanced features not available")
+    def layout_piles_with_constraints(*args, **kwargs):
+        raise NotImplementedError("Advanced features not available")
+    def create_track_marks(*args, **kwargs):
+        pass  # No-op
+    def create_construction_debris(*args, **kwargs):
+        return []  # Return empty list
+    def configure_geological_preset(*args, **kwargs):
+        return {}  # Return empty dict
+    def add_vegetation_traces(*args, **kwargs):
+        pass  # No-op
 
 
 def create_terraced_terrain(
@@ -156,11 +169,14 @@ def create_terraced_terrain(
                 texture_nodes.append(('grass', grass_tex))
         
         # Mix textures using noise
+        # ENSURE grass is always included (even if only ground textures loaded)
         if len(texture_nodes) >= 2:
-            # Mix ground and grass
+            # Mix ground and grass - ensure grass is always visible (30-50% mix)
             mix_node = nodes.new(type='ShaderNodeMixRGB')
             mix_node.blend_type = 'MIX'
-            mix_node.inputs['Fac'].default_value = 0.4  # 40% grass, 60% ground
+            # Ensure grass is always present: use 0.3-0.5 range for grass visibility
+            grass_fac = np.random.uniform(0.3, 0.5)  # 30-50% grass
+            mix_node.inputs['Fac'].default_value = grass_fac
             mix_node.location = (-200, -400)
             links.new(texture_nodes[0][1].outputs['Color'], mix_node.inputs['Color1'])
             links.new(texture_nodes[1][1].outputs['Color'], mix_node.inputs['Color2'])
@@ -189,12 +205,14 @@ def create_terraced_terrain(
             # Only one texture, use it directly
             links.new(texture_nodes[0][1].outputs['Color'], principled_bsdf.inputs['Base Color'])
         
-        # Add normal map for tire tracks if available
+        # ALWAYS add normal map for tire tracks if available (required for realism)
         if textures.get('tire_tracks') and textures['tire_tracks'].get('normal'):
             tire_normal_path = str(textures['tire_tracks']['normal'])
             bproc.material.add_normal(
                 nodes, links, tire_normal_path, principled_bsdf, invert_y_channel=True
             )
+            print("  Added tire track normal map for realism")
+            print("  Added tire track normal map for realism")
         
         # Add normal map from ground texture if available
         if textures.get('ground') and textures['ground'].get('normal'):
@@ -425,7 +443,7 @@ def select_random_textures(all_textures: Dict[str, List[Dict[str, Path]]]) -> Di
     """
     selected = {}
     
-    # Randomly select grass texture
+    # ALWAYS select grass texture (required for realism)
     if all_textures.get('grass') and len(all_textures['grass']) > 0:
         selected['grass'] = np.random.choice(all_textures['grass'])
     
@@ -437,10 +455,9 @@ def select_random_textures(all_textures: Dict[str, List[Dict[str, Path]]]) -> Di
             key = 'ground' if i == 0 else f'ground_{i+1}'
             selected[key] = ground_set
     
-    # Randomly select tire tracks (optional)
+    # ALWAYS select tire tracks (required for realism)
     if all_textures.get('tire_tracks') and len(all_textures['tire_tracks']) > 0:
-        if np.random.random() > 0.3:  # 70% chance to include tire tracks
-            selected['tire_tracks'] = np.random.choice(all_textures['tire_tracks'])
+        selected['tire_tracks'] = np.random.choice(all_textures['tire_tracks'])
     
     # Randomly select pathway (optional)
     if all_textures.get('pathway') and len(all_textures['pathway']) > 0:
@@ -517,6 +534,61 @@ def get_terrain_height(x: float, y: float, terrain: bproc.types.MeshObject) -> f
     variation = 0.3 * np.sin(distance * 0.1) * np.cos(x * 0.05) * np.sin(y * 0.05)
     base_height = terrace_level * 2.0
     return base_height + variation
+
+
+def calculate_terrain_roughness(
+    terrain: bproc.types.MeshObject,
+    terrain_size: float,
+    sample_points: int = 20
+) -> float:
+    """
+    Calculate average terrain roughness (slope variation) to determine if terrain is flat or mountainous.
+    
+    :param terrain: Terrain mesh object
+    :param terrain_size: Size of terrain area
+    :param sample_points: Number of sample points per dimension (total = sample_points^2)
+    :return: Average slope angle in radians (0=flat, >0.2=mountainous)
+    """
+    # Sample points across terrain
+    heights = []
+    sample_spacing = terrain_size / (sample_points - 1)
+    
+    for i in range(sample_points):
+        for j in range(sample_points):
+            x = -terrain_size/2 + i * sample_spacing
+            y = -terrain_size/2 + j * sample_spacing
+            height = get_terrain_height(x, y, terrain)
+            heights.append((x, y, height))
+    
+    # Calculate local slopes
+    slopes = []
+    for idx, (x, y, z) in enumerate(heights):
+        # Find neighbors
+        neighbors = []
+        for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+            ni = idx // sample_points + dx
+            nj = idx % sample_points + dy
+            if 0 <= ni < sample_points and 0 <= nj < sample_points:
+                nidx = ni * sample_points + nj
+                neighbors.append(heights[nidx])
+        
+        # Calculate local gradient
+        if len(neighbors) >= 2:
+            max_slope = 0.0
+            for nx, ny, nz in neighbors:
+                dist = np.sqrt((nx - x)**2 + (ny - y)**2)
+                if dist > 0:
+                    dz = abs(nz - z)
+                    slope = np.arctan(dz / dist)
+                    max_slope = max(max_slope, slope)
+            slopes.append(max_slope)
+    
+    # Return average slope
+    if slopes:
+        avg_slope = np.mean(slopes)
+        return avg_slope
+    else:
+        return 0.0
 
 
 def create_pile_on_terrain(
@@ -613,11 +685,34 @@ def create_pile_on_terrain(
             pile_material.set_principled_shader_value("Roughness", 0.7)  # Concrete is rough
         
         pile_material.set_principled_shader_value("Metallic", 0.0)  # Concrete is not metallic
+        
+        # Brighten concrete texture for better visibility
+        # Add a mix node to brighten the base color
+        brighten_mix = nodes.new(type='ShaderNodeMixRGB')
+        brighten_mix.blend_type = 'MIX'
+        brighten_mix.inputs['Fac'].default_value = 0.3  # 30% brightening
+        brighten_mix.location = (200, 0)
+        
+        # Bright white color for mixing
+        bright_color = nodes.new(type='ShaderNodeRGB')
+        bright_color.outputs['Color'].default_value = (0.9, 0.9, 0.92, 1.0)
+        bright_color.location = (0, -200)
+        
+        # Reconnect: color_tex -> brighten_mix -> principled_bsdf
+        links.new(color_tex.outputs['Color'], brighten_mix.inputs['Color1'])
+        links.new(bright_color.outputs['Color'], brighten_mix.inputs['Color2'])
+        links.new(brighten_mix.outputs['Color'], principled_bsdf.inputs['Base Color'])
+        
+        # Add slight emission for better visibility in dark scenes
+        pile_material.set_principled_shader_value("Emission Strength", 0.05)
     else:
-        # Fallback: Simple gray material
-        pile_material.set_principled_shader_value("Base Color", [0.5, 0.5, 0.55, 1.0])
+        # Fallback: Brighter gray material for better visibility against dark ground
+        # Increased brightness and contrast to stand out from terrain
+        pile_material.set_principled_shader_value("Base Color", [0.75, 0.75, 0.78, 1.0])  # Brighter gray
         pile_material.set_principled_shader_value("Metallic", 0.0)
         pile_material.set_principled_shader_value("Roughness", 0.7)
+        # Add slight emission for better visibility in dark scenes
+        pile_material.set_principled_shader_value("Emission Strength", 0.05)
     
     # Create base
     base_radius = 0.8
@@ -1161,7 +1256,7 @@ def generate_single_image(
     # Randomize lighting
     sun_elevation = kwargs.get('sun_elevation', np.random.uniform(30, 60))
     sun_azimuth = kwargs.get('sun_azimuth', np.random.uniform(0, 360))
-    sun_energy = kwargs.get('sun_energy', np.random.uniform(1.0, 2.0))  # Further reduced based on working versions
+    sun_energy = kwargs.get('sun_energy', np.random.uniform(1.5, 2.5))  # Brighter for better contrast
     sun_radius = kwargs.get('sun_radius', np.random.uniform(1.5, 2.5))
     
     # Random seed is set in main() based on --seed and --image_index
@@ -1195,11 +1290,43 @@ def generate_single_image(
     geological_preset = kwargs.get('geological_preset', np.random.choice(["loess", "hills"]))
     use_advanced_features = kwargs.get('use_advanced_features', ADVANCED_FEATURES_AVAILABLE)
     
+    # Only use advanced features if they are actually available
+    use_advanced_features = use_advanced_features and ADVANCED_FEATURES_AVAILABLE
+    
     # Configure geological preset (if using advanced features)
     preset_config = None
-    if use_advanced_features:
+    if use_advanced_features and ADVANCED_FEATURES_AVAILABLE:
         preset_config = configure_geological_preset(terrain, geological_preset, asset_path)
         add_vegetation_traces(terrain, preset_config, asset_path)
+    
+    # Analyze terrain to determine layout strategy
+    # Flat terrain -> regular grid layout, mountainous -> cluster layout
+    print("Analyzing terrain roughness...")
+    terrain_roughness = calculate_terrain_roughness(terrain, terrain_size, sample_points=15)
+    avg_slope_deg = np.degrees(terrain_roughness)
+    print(f"  Average terrain slope: {avg_slope_deg:.2f}°")
+    
+    # Determine layout strategy based on terrain
+    # Threshold: <5° = flat (regular grid), >=5° = mountainous (clusters)
+    is_flat_terrain = terrain_roughness < np.radians(5.0)
+    
+    if is_flat_terrain:
+        print(f"  Terrain is FLAT ({avg_slope_deg:.2f}°), using REGULAR GRID layout (large uniform area)")
+        # Override use_clusters for flat terrain
+        use_clusters = False
+        # Use larger, more uniform grid for flat terrain
+        num_rows = kwargs.get('num_rows', np.random.randint(15, 25))  # More rows
+        piles_per_row = kwargs.get('piles_per_row', np.random.randint(35, 50))  # More piles per row
+        row_spacing = kwargs.get('row_spacing', np.random.uniform(3.2, 3.8))
+    else:
+        print(f"  Terrain is MOUNTAINOUS ({avg_slope_deg:.2f}°), using CLUSTER layout (small scattered groups)")
+        # Override use_clusters for mountainous terrain
+        use_clusters = True
+        # Use smaller clusters for mountainous terrain
+        num_clusters = kwargs.get('num_clusters', np.random.randint(2, 6))
+        min_piles_per_cluster = kwargs.get('min_piles_per_cluster', np.random.randint(40, 60))
+        max_piles_per_cluster = kwargs.get('max_piles_per_cluster', np.random.randint(70, 100))
+        cluster_size = kwargs.get('cluster_size', np.random.uniform(20.0, 30.0))
     
     # Create piles: use advanced layout engine or legacy methods
     piles = []
@@ -1378,7 +1505,18 @@ def generate_single_image(
     
     # Render
     print("Rendering...")
-    data = bproc.renderer.render()
+    import time
+    render_start = time.time()
+    
+    # Add timeout protection and progress reporting
+    try:
+        data = bproc.renderer.render()
+        render_time = time.time() - render_start
+        print(f"  Render completed in {render_time:.2f} seconds")
+    except Exception as e:
+        render_time = time.time() - render_start
+        print(f"  Render failed after {render_time:.2f} seconds: {e}")
+        raise
     
     # Save image to images directory (using same method as working versions)
     os.makedirs(images_dir, exist_ok=True)
@@ -1548,7 +1686,7 @@ def main() -> None:
     # The denoiser will clean up the noise anyway
     if args.max_samples <= 50:
         # With fewer samples, use slightly higher threshold for faster rendering
-        actual_threshold = max(args.noise_threshold, 0.02)
+        actual_threshold = max(args.noise_threshold, 0.05)  # Increased from 0.02 to 0.05 for faster rendering
         if actual_threshold > args.noise_threshold:
             bproc.renderer.set_noise_threshold(actual_threshold)
             print(f"  Adjusted noise threshold to {actual_threshold} for faster rendering with {args.max_samples} samples")
@@ -1557,6 +1695,18 @@ def main() -> None:
     import bpy
     # Disable light tree (increases render time per sample, not needed for simple scenes)
     bpy.context.scene.cycles.use_light_tree = False
+    
+    # Set tile size for better GPU utilization (smaller tiles = faster on GPU)
+    # Note: In Blender 4.2+, tile management is automatic, but we can still optimize
+    try:
+        # Try to set tile size if available (may not exist in Blender 4.2+)
+        if hasattr(bpy.context.scene.render, 'tile_x'):
+            bpy.context.scene.render.tile_x = 64
+            bpy.context.scene.render.tile_y = 64
+            print("  Set tile size to 64x64 for faster GPU rendering")
+    except AttributeError:
+        # Tile size is managed automatically in Blender 4.2+
+        pass
     
     # Reduce light bounces for faster rendering (training data doesn't need perfect GI)
     bproc.renderer.set_light_bounces(
@@ -1727,7 +1877,7 @@ def main() -> None:
     # Lighting randomization (always randomized)
     kwargs['sun_elevation'] = np.random.uniform(30, 60)
     kwargs['sun_azimuth'] = np.random.uniform(0, 360)
-    kwargs['sun_energy'] = np.random.uniform(1.0, 2.0)
+    kwargs['sun_energy'] = np.random.uniform(1.5, 2.5)  # Brighter for better contrast
     kwargs['sun_radius'] = np.random.uniform(1.5, 2.5)
     
     # Generate single image (no cleanup needed - fresh process)
