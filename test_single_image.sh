@@ -19,16 +19,18 @@ echo ""
 # 清理旧文件（可选）
 # rm -rf "$OUTPUT_DIR"
 
-# 运行生成（生产环境参数）
+# 运行生成（测试模式：减少桩基数量以加快BVH构建）
+# 注意：不使用 --use_clusters，让地形分析自动决定，同时指定 --num_rows 和 --piles_per_row
 blenderproc run generate_mountainous_solar_site.py "$OUTPUT_DIR" \
     --image_index "$IMAGE_INDEX" \
     --seed "$SEED" \
-    --use_clusters \
     --use_advanced_features \
     --use_gpu \
     --max_samples 50 \
     --render_width 5280 \
-    --render_height 3956
+    --render_height 3956 \
+    --num_rows 10 \
+    --piles_per_row 25
 
 echo ""
 echo "=========================================="

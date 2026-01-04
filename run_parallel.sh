@@ -103,10 +103,10 @@ for IMG_IDX in $(seq 0 $((TOTAL_IMAGES - 1))); do
     
     # Run BlenderProc in background (single image per process)
     # Production parameters: full resolution, standard complexity
+    # Note: Not using --use_clusters to let terrain analysis decide layout automatically
     blenderproc run "$SCRIPT_NAME" "$OUTPUT_DIR" \
         --image_index "$IMG_IDX" \
         --seed "$SEED" \
-        --use_clusters \
         --use_advanced_features \
         --use_gpu \
         --max_samples 50 \

@@ -212,7 +212,6 @@ def create_terraced_terrain(
                 nodes, links, tire_normal_path, principled_bsdf, invert_y_channel=True
             )
             print("  Added tire track normal map for realism")
-            print("  Added tire track normal map for realism")
         
         # Add normal map from ground texture if available
         if textures.get('ground') and textures['ground'].get('normal'):
@@ -536,51 +535,74 @@ def get_terrain_height(x: float, y: float, terrain: bproc.types.MeshObject) -> f
     return base_height + variation
 
 
+def get_terrain_height_fast(x: float, y: float) -> float:
+    """
+    Fast terrain height approximation for terrain analysis.
+    Uses simple terrace model instead of expensive ray casting.
+    
+    :param x: X coordinate
+    :param y: Y coordinate
+    :return: Z height at (x, y)
+    """
+    # Simple terrace model (matches create_terraced_terrain logic)
+    distance = np.sqrt(x**2 + y**2)
+    terrace_level = int(distance / 25.0)
+    variation = 0.3 * np.sin(distance * 0.1) * np.cos(x * 0.05) * np.sin(y * 0.05)
+    base_height = terrace_level * 2.0
+    return base_height + variation
+
+
 def calculate_terrain_roughness(
     terrain: bproc.types.MeshObject,
     terrain_size: float,
-    sample_points: int = 20
+    sample_points: int = 8  # Reduced from 20 to 8 for faster calculation (64 samples instead of 400)
 ) -> float:
     """
     Calculate average terrain roughness (slope variation) to determine if terrain is flat or mountainous.
+    Optimized for performance: uses fewer samples and simplified calculation.
     
     :param terrain: Terrain mesh object
     :param terrain_size: Size of terrain area
     :param sample_points: Number of sample points per dimension (total = sample_points^2)
-    :return: Average slope angle in radians (0=flat, >0.2=mountainous)
+    :return: Average slope angle in radians (0=flat, >0.087=mountainous, ~5°)
     """
-    # Sample points across terrain
-    heights = []
-    sample_spacing = terrain_size / (sample_points - 1)
+    print(f"  Sampling {sample_points}x{sample_points} points for terrain analysis...")
     
+    # Sample points across terrain (reduced sampling for performance)
+    heights = []
+    sample_spacing = terrain_size / max(1, sample_points - 1)
+    
+    # Sample in a grid pattern
     for i in range(sample_points):
         for j in range(sample_points):
             x = -terrain_size/2 + i * sample_spacing
             y = -terrain_size/2 + j * sample_spacing
-            height = get_terrain_height(x, y, terrain)
+            # Use fast approximation instead of expensive ray casting for terrain analysis
+            height = get_terrain_height_fast(x, y)
             heights.append((x, y, height))
     
-    # Calculate local slopes
+    # Calculate local slopes (simplified: only check immediate neighbors)
     slopes = []
     for idx, (x, y, z) in enumerate(heights):
-        # Find neighbors
-        neighbors = []
+        # Find immediate neighbors (4-directional)
+        max_slope = 0.0
+        neighbor_count = 0
         for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
             ni = idx // sample_points + dx
             nj = idx % sample_points + dy
             if 0 <= ni < sample_points and 0 <= nj < sample_points:
+                neighbor_count += 1
                 nidx = ni * sample_points + nj
-                neighbors.append(heights[nidx])
-        
-        # Calculate local gradient
-        if len(neighbors) >= 2:
-            max_slope = 0.0
-            for nx, ny, nz in neighbors:
-                dist = np.sqrt((nx - x)**2 + (ny - y)**2)
+                nx, ny, nz = heights[nidx]
+                dist = sample_spacing  # Use known spacing instead of calculating
                 if dist > 0:
                     dz = abs(nz - z)
                     slope = np.arctan(dz / dist)
                     max_slope = max(max_slope, slope)
+        
+        # Include all points with 2+ neighbors in the average (even if max_slope is 0)
+        # This ensures flat regions are included, preventing bias toward higher roughness
+        if neighbor_count >= 2:
             slopes.append(max_slope)
     
     # Return average slope
@@ -588,6 +610,7 @@ def calculate_terrain_roughness(
         avg_slope = np.mean(slopes)
         return avg_slope
     else:
+        # Default to flat if no slopes calculated
         return 0.0
 
 
@@ -1302,7 +1325,8 @@ def generate_single_image(
     # Analyze terrain to determine layout strategy
     # Flat terrain -> regular grid layout, mountainous -> cluster layout
     print("Analyzing terrain roughness...")
-    terrain_roughness = calculate_terrain_roughness(terrain, terrain_size, sample_points=15)
+    # Use fewer samples (8x8=64) for faster calculation
+    terrain_roughness = calculate_terrain_roughness(terrain, terrain_size, sample_points=8)
     avg_slope_deg = np.degrees(terrain_roughness)
     print(f"  Average terrain slope: {avg_slope_deg:.2f}°")
     
@@ -1696,6 +1720,13 @@ def main() -> None:
     # Disable light tree (increases render time per sample, not needed for simple scenes)
     bpy.context.scene.cycles.use_light_tree = False
     
+    # Optimize BVH building for large scenes (prevents hanging on complex scenes)
+    # Use STATIC_BVH for better performance with many objects
+    bpy.context.scene.cycles.debug_bvh_type = "STATIC_BVH"
+    # Disable spatial splits (can cause BVH building to hang with many objects)
+    bpy.context.scene.cycles.debug_use_spatial_splits = False
+    print("  Optimized BVH settings: STATIC_BVH, spatial_splits=off")
+    
     # Set tile size for better GPU utilization (smaller tiles = faster on GPU)
     # Note: In Blender 4.2+, tile management is automatic, but we can still optimize
     try:
@@ -1822,6 +1853,28 @@ def main() -> None:
         kwargs['terrace_height'] = args.terrace_height if args.terrace_height != 2.0 else np.random.uniform(1.5, 3.0)
     
     # Pile randomization
+    # Always parse num_rows, piles_per_row, and row_spacing if provided (for terrain-based override)
+    # This allows terrain analysis to use these values even if use_clusters is True
+    if isinstance(args.num_rows, str) and ',' in args.num_rows:
+        min_r, max_r = map(int, args.num_rows.split(','))
+        kwargs['num_rows'] = np.random.randint(min_r, max_r + 1)
+    elif args.num_rows != 15:
+        kwargs['num_rows'] = args.num_rows
+    
+    if isinstance(args.piles_per_row, str) and ',' in args.piles_per_row:
+        min_p, max_p = map(int, args.piles_per_row.split(','))
+        kwargs['piles_per_row'] = np.random.randint(min_p, max_p + 1)
+    elif args.piles_per_row != 35:
+        kwargs['piles_per_row'] = args.piles_per_row
+    
+    # Always parse row_spacing if provided (for terrain-based override)
+    if isinstance(args.row_spacing, str) and ',' in args.row_spacing:
+        min_s, max_s = map(float, args.row_spacing.split(','))
+        kwargs['row_spacing'] = np.random.uniform(min_s, max_s)
+    elif args.row_spacing != 3.5:
+        kwargs['row_spacing'] = args.row_spacing
+    
+    # Cluster parameters (only if explicitly using clusters)
     if args.use_clusters:
         kwargs['num_clusters'] = args.num_clusters if args.num_clusters is not None else np.random.randint(1, 6)
         
@@ -1842,24 +1895,6 @@ def main() -> None:
             kwargs['cluster_size'] = np.random.uniform(min_s, max_s)
         else:
             kwargs['cluster_size'] = args.cluster_size if args.cluster_size != 30.0 else np.random.uniform(25.0, 35.0)
-    else:
-        if isinstance(args.num_rows, str) and ',' in args.num_rows:
-            min_r, max_r = map(int, args.num_rows.split(','))
-            kwargs['num_rows'] = np.random.randint(min_r, max_r + 1)
-        else:
-            kwargs['num_rows'] = args.num_rows if args.num_rows != 15 else np.random.randint(12, 18)
-        
-        if isinstance(args.piles_per_row, str) and ',' in args.piles_per_row:
-            min_p, max_p = map(int, args.piles_per_row.split(','))
-            kwargs['piles_per_row'] = np.random.randint(min_p, max_p + 1)
-        else:
-            kwargs['piles_per_row'] = args.piles_per_row if args.piles_per_row != 35 else np.random.randint(30, 40)
-        
-        if isinstance(args.row_spacing, str) and ',' in args.row_spacing:
-            min_s, max_s = map(float, args.row_spacing.split(','))
-            kwargs['row_spacing'] = np.random.uniform(min_s, max_s)
-        else:
-            kwargs['row_spacing'] = args.row_spacing if args.row_spacing != 3.5 else np.random.uniform(3.0, 4.0)
     
     # Distractor randomization
     if isinstance(args.num_bags, str) and ',' in args.num_bags:
